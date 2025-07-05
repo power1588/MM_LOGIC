@@ -9,6 +9,15 @@ strategy:
   target_orders_per_side: 1  # 每边目标订单数
   drift_threshold: 0.005  # 0.5%
   rebalance_interval: 5  # 重新平衡间隔（秒）
+  modify_threshold: 0.003  # 0.3% - 改单阈值
+  max_modify_deviation: 0.01  # 1% - 最大改单偏差
+
+# 订单管理配置
+order_management:
+  reset_interval: 300  # 定时重置间隔（秒，默认5分钟）
+  max_pending_modifications: 10  # 最大待处理改单数
+  modification_timeout: 30  # 改单超时时间（秒）
+  cleanup_interval: 7200  # 订单清理间隔（秒，2小时）
 
 # 价格计算配置
 price:
@@ -26,6 +35,8 @@ execution:
   rate_limit: 10  # 每秒请求数限制
   max_retries: 3  # 最大重试次数
   retry_delay: 1.0  # 重试延迟（秒）
+  modify_worker_count: 2  # 改单工作器数量
+  modify_rate_limit: 5  # 改单速率限制
 
 # 风险配置
 risk:

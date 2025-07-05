@@ -48,6 +48,45 @@ class ExchangeAPI:
             
         return await self._signed_request('DELETE', '/api/v3/order', params)
         
+    async def modify_order(self, symbol: str, orderId: str, 
+                          new_price: Optional[str] = None,
+                          new_quantity: Optional[str] = None) -> Dict[str, Any]:
+        """改单 - 通过撤单+重新下单实现"""
+        # 获取原订单信息
+        order_info = await self.get_order_status(symbol, orderId)
+        
+        if order_info['status'] not in ['NEW', 'PARTIALLY_FILLED']:
+            raise ValueError(f"订单状态不允许改单: {order_info['status']}")
+            
+        # 撤销原订单
+        cancel_result = await self.cancel_order(symbol, orderId)
+        
+        if cancel_result['status'] != 'CANCELED':
+            raise Exception(f"撤销订单失败: {cancel_result}")
+            
+        # 计算新的数量（考虑已成交部分）
+        remaining_qty = float(order_info['origQty']) - float(order_info['executedQty'])
+        new_qty = new_quantity if new_quantity else str(remaining_qty)
+        
+        # 重新下单
+        place_params = {
+            'symbol': symbol,
+            'side': order_info['side'],
+            'type': 'LIMIT',
+            'quantity': new_qty,
+            'timeInForce': 'GTC'
+        }
+        
+        if new_price:
+            place_params['price'] = new_price
+        else:
+            place_params['price'] = order_info['price']
+            
+        # 使用新的客户端订单ID
+        place_params['newClientOrderId'] = f"modify_{orderId}_{int(time.time() * 1000)}"
+        
+        return await self._signed_request('POST', '/api/v3/order', place_params)
+        
     async def get_order_status(self, symbol: str, orderId: str = None,
                               origClientOrderId: str = None) -> Dict[str, Any]:
         """查询订单状态"""

@@ -18,6 +18,10 @@ class EventType(Enum):
     ORDER_STATUS = auto()
     ORDER_FILL = auto()
     ORDER_CANCEL = auto()
+    ORDER_RESET = auto()  # 新增：订单重置事件
+    ORDER_MODIFY = auto()  # 新增：改单事件
+    ORDER_MODIFY_SUCCESS = auto()  # 新增：改单成功事件
+    ORDER_MODIFY_FAILURE = auto()  # 新增：改单失败事件
     
     # 策略事件
     PLACE_ORDER = auto()
@@ -58,6 +62,38 @@ class OrderStatusEvent(BaseEvent):
     status: str  # 使用字符串而不是OrderStatus枚举
     order_data: Dict[str, Any]  # 使用字典而不是OrderState对象
     old_status: Optional[str] = None
+    correlation_id: Optional[str] = None
+    def __post_init__(self):
+        if self.correlation_id is None:
+            self.correlation_id = str(uuid.uuid4())
+
+@dataclass
+class OrderResetEvent(BaseEvent):
+    """订单重置事件"""
+    correlation_id: Optional[str] = None
+    def __post_init__(self):
+        if self.correlation_id is None:
+            self.correlation_id = str(uuid.uuid4())
+
+@dataclass
+class OrderModifyEvent(BaseEvent):
+    """改单事件"""
+    correlation_id: Optional[str] = None
+    def __post_init__(self):
+        if self.correlation_id is None:
+            self.correlation_id = str(uuid.uuid4())
+
+@dataclass
+class OrderModifySuccessEvent(BaseEvent):
+    """改单成功事件"""
+    correlation_id: Optional[str] = None
+    def __post_init__(self):
+        if self.correlation_id is None:
+            self.correlation_id = str(uuid.uuid4())
+
+@dataclass
+class OrderModifyFailureEvent(BaseEvent):
+    """改单失败事件"""
     correlation_id: Optional[str] = None
     def __post_init__(self):
         if self.correlation_id is None:

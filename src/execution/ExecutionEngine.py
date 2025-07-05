@@ -4,12 +4,15 @@ import random
 import logging
 from decimal import Decimal
 from ..core.orders.OrderState import OrderState, OrderStatus
-from ..core.orders.OrderState import OrderManager
+from ..core.orders.OrderManager import OrderManager
 from .api.ExchangeAPI import ExchangeAPI
 from ..core.events.EventBus import EventBus
 from ..utils.limiting.RateLimiter import RateLimiter
 from .ExecutionTask import ExecutionTask
-from ..core.events.EventType import PlaceOrderEvent, CancelOrderEvent, EventType
+from ..core.events.EventType import (
+    PlaceOrderEvent, CancelOrderEvent, EventType,
+    OrderResetEvent, OrderModifyEvent, OrderModifySuccessEvent, OrderModifyFailureEvent
+)
 from ..config.Configs import ExecutionConfig
 
 class ExecutionEngine:
@@ -31,11 +34,18 @@ class ExecutionEngine:
         self.batch_size = config.batch_size
         self.rate_limiter = RateLimiter(config.rate_limit)
         
+        # 改单相关
+        self.modify_queue = asyncio.Queue()
+        self.modify_worker_task = None
+        
     async def start(self) -> None:
         """启动执行引擎"""
         # 启动执行工作器
         for i in range(self.config.worker_count):
             asyncio.create_task(self._execution_worker(f"worker-{i}"))
+            
+        # 启动改单工作器
+        self.modify_worker_task = asyncio.create_task(self._modify_worker())
             
         # 启动批处理器
         asyncio.create_task(self._batch_processor())
@@ -43,6 +53,18 @@ class ExecutionEngine:
         # 注册事件处理器
         await self.event_bus.subscribe(EventType.PLACE_ORDER, self.handle_place_order)
         await self.event_bus.subscribe(EventType.CANCEL_ORDER, self.handle_cancel_order)
+        await self.event_bus.subscribe(EventType.ORDER_RESET, self.handle_order_reset)
+        await self.event_bus.subscribe(EventType.ORDER_MODIFY, self.handle_order_modify)
+        
+    async def stop(self) -> None:
+        """停止执行引擎"""
+        if self.modify_worker_task:
+            self.modify_worker_task.cancel()
+            try:
+                await self.modify_worker_task
+            except asyncio.CancelledError:
+                pass
+        self.logger.info("执行引擎已停止")
         
     async def handle_place_order(self, event: PlaceOrderEvent) -> None:
         """处理下单请求"""
@@ -98,6 +120,73 @@ class ExecutionEngine:
         
         await self.execution_queue.put(task)
         
+    async def handle_order_reset(self, event: OrderResetEvent) -> None:
+        """处理订单重置事件"""
+        self.logger.info("收到订单重置事件，开始批量撤单")
+        
+        # 获取所有活跃订单
+        active_orders = await self.order_manager.get_active_orders()
+        
+        # 批量创建撤单任务
+        for order in active_orders:
+            task = ExecutionTask(
+                task_type='CANCEL_ORDER',
+                order_data=order,
+                retry_count=0,
+                priority=1  # 重置撤单优先级最高
+            )
+            await self.execution_queue.put(task)
+            
+        self.logger.info(f"已创建 {len(active_orders)} 个撤单任务")
+        
+    async def handle_order_modify(self, event: OrderModifyEvent) -> None:
+        """处理改单事件"""
+        order_id = event.data.get('order_id')
+        new_price = event.data.get('new_price')
+        new_quantity = event.data.get('new_quantity')
+        
+        if not order_id:
+            self.logger.error("改单事件缺少订单ID")
+            return
+            
+        # 获取订单
+        order = await self.order_manager.get_order_by_id(order_id)
+        if not order:
+            self.logger.error(f"订单不存在: {order_id}")
+            return
+            
+        # 创建改单任务
+        task = ExecutionTask(
+            task_type='MODIFY_ORDER',
+            order_data=order,
+            modify_data={
+                'new_price': new_price,
+                'new_quantity': new_quantity
+            },
+            retry_count=0,
+            priority=3  # 改单优先级中等
+        )
+        
+        await self.modify_queue.put(task)
+        
+    async def _modify_worker(self) -> None:
+        """改单工作器"""
+        while True:
+            try:
+                task = await self.modify_queue.get()
+                
+                # 速率限制
+                await self.rate_limiter.acquire()
+                
+                # 执行改单
+                await self._execute_modify_order(task)
+                
+                self.modify_queue.task_done()
+                
+            except Exception as e:
+                self.logger.error(f"Modify worker error: {e}")
+                await asyncio.sleep(1)
+                
     async def _execution_worker(self, worker_name: str) -> None:
         """执行工作器"""
         while True:
@@ -148,6 +237,37 @@ class ExecutionEngine:
                     await self.order_manager.update_order_status(
                         task.order_data.client_order_id, OrderStatus.REJECTED
                     )
+                    
+    async def _execute_modify_order(self, task: ExecutionTask) -> None:
+        """执行改单"""
+        order_data = task.order_data
+        modify_data = task.modify_data
+        
+        try:
+            # 调用交易所改单API
+            response = await self.exchange_api.modify_order(
+                symbol=order_data.symbol,
+                orderId=order_data.order_id,
+                new_price=modify_data.get('new_price'),
+                new_quantity=modify_data.get('new_quantity')
+            )
+            
+            # 改单成功
+            await self.order_manager.apply_modification(order_data.order_id, True)
+            
+            self.logger.info(f"改单成功: {order_data.order_id}")
+            
+        except Exception as e:
+            self.logger.error(f"改单失败: {order_data.order_id}, 错误: {e}")
+            
+            # 改单失败
+            await self.order_manager.apply_modification(order_data.order_id, False)
+            
+            # 重试逻辑
+            if task.retry_count < self.config.max_retries:
+                task.retry_count += 1
+                await asyncio.sleep(self.config.retry_delay * (2 ** task.retry_count))
+                await self.modify_queue.put(task)
                     
     async def _execute_place_order(self, task: ExecutionTask) -> None:
         """执行下单"""

@@ -12,6 +12,16 @@ class StrategyConfig:
     target_orders_per_side: int  # 1
     drift_threshold: Decimal  # 0.005 (0.5%)
     rebalance_interval: int  # 秒
+    modify_threshold: Decimal  # 0.003 (0.3%) - 改单阈值
+    max_modify_deviation: Decimal  # 0.01 (1%) - 最大改单偏差
+    
+@dataclass
+class OrderManagementConfig:
+    """订单管理配置"""
+    reset_interval: int  # 定时重置间隔（秒）
+    max_pending_modifications: int  # 最大待处理改单数
+    modification_timeout: int  # 改单超时时间（秒）
+    cleanup_interval: int  # 订单清理间隔（秒）
     
 @dataclass
 class PriceConfig:
@@ -31,6 +41,8 @@ class ExecutionConfig:
     rate_limit: int  # 每秒请求数
     max_retries: int
     retry_delay: float
+    modify_worker_count: int  # 改单工作器数量
+    modify_rate_limit: int  # 改单速率限制
     
 @dataclass
 class RiskConfig:
@@ -45,6 +57,7 @@ class RiskConfig:
 class MasterConfig:
     """主配置"""
     strategy: StrategyConfig
+    order_management: OrderManagementConfig
     price: PriceConfig
     execution: ExecutionConfig
     risk: RiskConfig
